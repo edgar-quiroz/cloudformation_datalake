@@ -1,0 +1,139 @@
+service: cdp-datalake
+
+provider:
+  name: aws
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  stackName: ${self:service}
+  deploymentPrefix: ${self:service}
+  cfnRole: arn:aws:iam::<AccountId>:role/CloudFormationRole
+
+custom:
+  aws_account_id: !Ref AWS::AccountId
+  bucket: ${self:service}-raw-bucket
+  athena_bucket: ${self:service}-athena-results-bucket
+  database: ${self:service}-database
+  crawler: ${self:service}-crawler
+  workgroup: ${self:service}-athena-workgroup
+
+resources:
+  Resources:
+    LakeformationSettings:
+      Type: AWS::LakeFormation::DataLakeSettings
+      Properties: 
+        Admins: 
+          - DataLakePrincipalIdentifier: arn:aws:iam::<AccountId>:user/Admin
+
+    # Bucket utilizado para que Athena 
+    # guarde los resultados de los queries
+    AthenaResultsBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Delete
+      Properties:
+        AccessControl: Private
+        BucketName: ${self:custom.athena_bucket}
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+
+    # Bucket para el data lake para los datos RAW
+    SourceDataStore:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Delete
+      Properties:
+        AccessControl: Private
+        BucketName: ${self:custom.bucket}
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        LifecycleConfiguration:
+          Rules:
+            - Id: StandardIARule
+              Status: Enabled
+              Transitions:
+                - TransitionInDays: '365'
+                  StorageClass: STANDARD_IA
+            - Id: GlacierRule
+              Status: Enabled
+              Transitions:
+                - TransitionInDays: '1825'
+                  StorageClass: GLACIER
+
+    # S3 puede tener muchos buckets, es necesario
+    # indicar a Lake Formation cuales pertenecen
+    # al data lake, en este caso SourceDataStore
+    DatalakeLocation:
+      Type: AWS::LakeFormation::Resource
+      Properties: 
+        ResourceArn: !GetAtt SourceDataStore.Arn
+        RoleArn: !ImportValue GlueETLRoleArn
+        UseServiceLinkedRole: false
+
+    # Base de datos Glue (Catalog) que almacenará
+    # la información del bucket SourceDataStore
+    SourceGlueDatabase:
+      Type: AWS::Glue::Database
+      Properties:
+        CatalogId: !Ref AWS::AccountId
+        DatabaseInput:
+          Name: ${self:custom.database}
+          Description: String
+
+    # Por defecto nada tiene acceso a los componentes
+    # Se debe asignar permiso al Crawler
+    # para escribir resultado en la base de datos (Catalog)
+    SourceCrawlerGrants:
+      Type: AWS::LakeFormation::Permissions
+      Properties:
+        DataLakePrincipal:
+          DataLakePrincipalIdentifier: !ImportValue GlueETLRoleArn
+        Permissions:
+          - ALTER
+          - DROP
+          - CREATE_TABLE
+        Resource:
+          DatabaseResource:
+            Name: !Ref SourceGlueDatabase
+
+    # Crawler obtendrá información de S3 y la guardará
+    # en la base de datos
+    SourceCrawler:
+      Type: AWS::Glue::Crawler
+      Properties:
+        Name: ${self:custom.crawler}
+        Role: !ImportValue GlueETLRoleArn
+        DatabaseName: !Ref SourceGlueDatabase
+        Targets:
+          S3Targets:
+            - Path: !Ref SourceDataStore
+        SchemaChangePolicy:
+          UpdateBehavior: 'UPDATE_IN_DATABASE'
+          DeleteBehavior: 'LOG'
+        Schedule:
+          ScheduleExpression: "cron(10 10 ? * FRI *)"
+
+    # Workgroup de athena para los usuarios Data Analytics
+    # Está limitado a escanear máximo 200MB
+    # E indica que quien solicita la información paga
+    AthenaWorkGroup:
+      Type: AWS::Athena::WorkGroup
+      Properties:
+        Name: ${self:custom.workgroup}
+        Description: Analytics WorkGroup
+        State: ENABLED
+        WorkGroupConfiguration:
+          BytesScannedCutoffPerQuery: 200000000
+          EnforceWorkGroupConfiguration: false
+          PublishCloudWatchMetricsEnabled: false
+          RequesterPaysEnabled: true
+          ResultConfiguration:
+            OutputLocation: s3://cdp-lakeformation-stack-athena-results-bucket/analyst
+
+  Outputs:
+    SourceGlueDatabase:
+      Description: glue Database
+      Value: !Ref SourceGlueDatabase
+      Export: 
+        Name: SourceGlueDatabase

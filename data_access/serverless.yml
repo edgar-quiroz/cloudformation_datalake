@@ -1,0 +1,85 @@
+service: cdp-datalake-access
+
+provider:
+  name: aws
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  stackName: ${self:service}
+  deploymentPrefix: ${self:service}
+  cfnRole: arn:aws:iam::<AccountId>:role/CloudFormationRole
+
+custom:
+  aws_account_id: !Ref AWS::AccountId
+
+resources:
+  Resources:
+
+    # Es necesario dar permisos a GlueETLRole
+    # Para acceder a los datos de los buckets del data lake
+    # En este momento esta acción no está soportada por cloudformation
+    # Not supported (Se debe hacer manual)
+    # DataLocationGrants:
+    #   Type: AWS::LakeFormation::Permissions
+    #   Properties:
+    #     DataLakePrincipal:
+    #       DataLakePrincipalIdentifier: !ImportValue GlueETLRoleArn
+    #     Permissions:
+    #       - DATA_LOCATION_ACCESS
+    #     Resource:
+    #       DataLocationResource:
+    #         CatalogId: !Ref AWS::AccountId
+    #         S3Resource: !GetAtt SourceDataStore.Arn
+
+    # Se debe inidicar que CloudFormationRoleArn
+    # es un database creator
+    # En este momento no hay forma de dar permisos CREATE_DATABASE
+    # Sobre el Data Catalog ya que Data Catalog no es opción a indicar
+    # dentro de Resource
+    # Not supported (Se debe hacer manual)
+    # CloudformationGrants:
+    #   Type: AWS::LakeFormation::Permissions
+    #   Properties:
+    #     DataLakePrincipal:
+    #       DataLakePrincipalIdentifier: !ImportValue CloudFormationRoleArn
+    #     Permissions:
+    #       - CREATE_DATABASE
+    #     Resource:
+    #       
+
+    # CloudFormationRole Debe tener permisos para asignar permisos (GRANT)
+    # Se debe hacer manual (Cíclica)
+    # CloudFormationGrants:
+    #   Type: AWS::LakeFormation::Permissions
+    #   Properties:
+    #     DataLakePrincipal:
+    #       DataLakePrincipalIdentifier: !ImportValue CloudFormationRoleArn
+    #     Permissions:
+    #       - ALL
+    #     PermissionsWithGrantOption:
+    #       - ALL
+    #     Resource:
+    #       TableResource:
+    #         DatabaseName: !Ref SourceGlueDatabase
+    #         Name: cdp_lakeformation_stack_bucket
+
+    # Se dan permisos al usuario Analytics
+    # Sobre la base de datos y tabla creada
+    # Únicamente en el campo email
+    # Sin este componente, el usuario Analytics 
+    # no puede acceder a ninguna información
+    SelfAccountLakeGrants:
+      Type: AWS::LakeFormation::Permissions
+      Properties:
+        DataLakePrincipal:
+          DataLakePrincipalIdentifier: "arn:aws:iam::<AccountId>:user/Analyst"
+        Permissions:
+          - SELECT
+        PermissionsWithGrantOption:
+          - SELECT
+        Resource:
+          TableWithColumnsResource:
+            CatalogId: !Ref AWS::AccountId
+            ColumnNames:
+              - email
+            DatabaseName: !ImportValue SourceGlueDatabase
+            Name: <table name>
