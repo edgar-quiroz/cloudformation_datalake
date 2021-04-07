@@ -129,7 +129,7 @@ resources:
           PublishCloudWatchMetricsEnabled: false
           RequesterPaysEnabled: true
           ResultConfiguration:
-            OutputLocation: s3://cdp-lakeformation-stack-athena-results-bucket/analyst
+            OutputLocation: s3://some-bucket/analyst
 
   Outputs:
     SourceGlueDatabase:
